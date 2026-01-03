@@ -21,7 +21,6 @@ st.set_page_config(
 
 # ---------------- VISUAL STYLE CONSTANTS ----------------
 plt.style.use('seaborn-v0_8-white')
-# Professional color palette
 LIPID_STYLES = {
     'POPEE': {'c': '#e7298a', 'm': 'o'}, 'POPC': {'c': '#4daf4a', 'm': 's'},
     'POGL': {'c': '#e6ab02', 'm': '^'}, 'POPE': {'c': '#377eb8', 'm': 'v'},
@@ -80,7 +79,6 @@ def run_processing(u, params, temp_dir):
     z_max = params['z_max']
     pore_thresh = params['pore_thresh']
     prepore_low = params['prepore_low']
-    prepore_high = params['prepore_high']
     rupture_dens = params['rupture_dens']
     stride = params['stride']
     max_time_ps = params['max_time_ps']
@@ -104,20 +102,14 @@ def run_processing(u, params, temp_dir):
                              markeredgecolor='black', markersize=9, label=res) 
                       for res, s in LIPID_STYLES.items()]
 
-    # UI Progress Elements
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
-    # Calculate approximate frames to process for progress bar
     total_frames_in_traj = len(u.trajectory)
     
     for i, ts in enumerate(u.trajectory[::stride]):
         
-        # TIME LIMIT CHECK
-        if ts.time > max_time_ps:
-            break
+        if ts.time > max_time_ps: break
             
-        # Update UI
         progress_val = min((ts.frame / total_frames_in_traj), 1.0)
         progress_bar.progress(progress_val)
         status_text.text(f"Processing Frame {ts.frame} | Time: {ts.time:.0f} ps")
@@ -153,28 +145,36 @@ def run_processing(u, params, temp_dir):
             density_smooth = ndimage.gaussian_filter(d_map, sigma=1.5)
             max_core_density = np.max(density_smooth)
             
-            if max_core_density >= rupture_dens: RUPTURE_FLAG = True
-            
-            # Pore Detect
+            # --- STRICT THRESHOLD LOGIC (NO SIZE DEPENDENCY) ---
+            # We determine RUPTURE status immediately
+            if max_core_density >= rupture_dens: 
+                RUPTURE_FLAG = True
+
+            # --- VISUAL DETECTION ONLY (Does not affect CSV Label) ---
+            # We still find centers so we can draw circles on the map
             pore_bin = density_smooth >= pore_thresh
             lbl, n_f = ndimage.label(pore_bin)
             if n_f > 0:
                 sizes = ndimage.sum(pore_bin, lbl, range(1, n_f+1))
-                valid = np.where(sizes >= 8)[0] + 1
-                if len(valid) > 0:
-                    current_pore_area_pixels = np.sum(sizes[valid-1])
-                    coms = np.atleast_2d(ndimage.center_of_mass(pore_bin, lbl, valid))
-                    active_pore_centers = [np.array([(c[0]*dx)/10, (c[1]*dy)/10]) for c in coms]
+                # Just keeping size calc for area reporting, not for classification
+                current_pore_area_pixels = np.sum(sizes) 
+                coms = ndimage.center_of_mass(pore_bin, lbl, range(1, n_f+1))
+                coms = np.atleast_2d(coms)
+                active_pore_centers = [np.array([(c[0]*dx)/10, (c[1]*dy)/10]) for c in coms]
             
-            # Pre-Pore Detect
+            # Find Prepore centers for visuals
             if not RUPTURE_FLAG:
-                for h in pore_history_log:
-                    p_c = h['center']
-                    gx, gy = int(np.clip((p_c[0]*10)/dx, 0, grid_res-1)), int(np.clip((p_c[1]*10)/dy, 0, grid_res-1))
-                    val = density_smooth[gx, gy]
-                    is_pore = any(np.linalg.norm(p_c - p) < FORENSIC_RADIUS_NM for p in active_pore_centers)
-                    if not is_pore and (prepore_low <= val < prepore_high):
-                        active_prepore_centers.append(p_c)
+                hotspot_bin = (density_smooth >= prepore_low) & (density_smooth < pore_thresh)
+                lbl_h, n_h = ndimage.label(hotspot_bin)
+                if n_h > 0:
+                    coms_h = ndimage.center_of_mass(hotspot_bin, lbl_h, range(1, n_h+1))
+                    coms_h = np.atleast_2d(coms_h)
+                    for c in coms_h:
+                        p_c = np.array([(c[0]*dx)/10, (c[1]*dy)/10])
+                        # Only add if far from existing pore centers
+                        is_near_pore = any(np.linalg.norm(p_c - p) < FORENSIC_RADIUS_NM for p in active_pore_centers)
+                        if not is_near_pore:
+                            active_prepore_centers.append(p_c)
 
         # --- LIPIDS ---
         curr_pore_lipids = {}
@@ -217,7 +217,9 @@ def run_processing(u, params, temp_dir):
                 ax_map.scatter(pos_nm[:,0], pos_nm[:,1], c=colors, marker=s['m'], s=sizes, 
                                linewidths=lws, edgecolors=edges, alpha=alphas)
 
-        # --- CSV LOGGING ---
+        # --- DATASET LOGIC: PURE THRESHOLD DEPENDENCY ---
+        # We ignore area size completely for classification.
+        
         pixel_area_nm2 = (dx/10) * (dy/10)
         final_area = current_pore_area_pixels * pixel_area_nm2
         
@@ -225,12 +227,15 @@ def run_processing(u, params, temp_dir):
         row_state = "Stable"
         active_lipids = {}
         
-        if RUPTURE_FLAG:
+        # HIERARCHY BASED ONLY ON MAX_CORE_DENSITY
+        if max_core_density >= rupture_dens:
             row_label, row_state, active_lipids = 3, "Ruptured", curr_pore_lipids
-        elif active_pore_centers:
+        elif max_core_density >= pore_thresh:
             row_label, row_state, active_lipids = 2, "Pore", curr_pore_lipids
-        elif active_prepore_centers:
+        elif max_core_density >= prepore_low:
             row_label, row_state, active_lipids = 1, "Pre-Pore", curr_prepore_lipids
+        else:
+            row_label, row_state = 0, "Stable"
             
         record = {
             'Frame': ts.frame, 'Time_ps': ts.time, 'Label': row_label, 
@@ -260,7 +265,6 @@ def run_processing(u, params, temp_dir):
             for p in active_prepore_centers: ax_map.add_patch(Circle(p, FORENSIC_RADIUS_NM, fill=False, edgecolor='#00FF00', lw=2))
             for p in active_pore_centers: ax_map.add_patch(Circle(p, FORENSIC_RADIUS_NM, fill=False, edgecolor='red', lw=2))
             
-        # Panels
         ax_key.text(0.5, 0.88, f"{max_core_density:.0f}", ha='center', fontsize=20, fontweight='bold', 
                     color='red' if RUPTURE_FLAG else '#0066CC', transform=ax_key.transAxes)
         ax_key.legend(handles=legend_handles, loc='center', title="LIPID KEY", fontsize=8)
@@ -281,7 +285,6 @@ def run_processing(u, params, temp_dir):
 
 # ---------------- MAIN APP LAYOUT ----------------
 
-# HEADER
 st.title("Forensic MD Dashboard")
 st.markdown("Automated Pore Detection & Lipid Dynamics Analysis")
 st.markdown("---")
@@ -293,22 +296,20 @@ with st.sidebar:
     xtc_file = st.file_uploader("Trajectory File (.xtc)", type=['xtc'])
     
     st.header("2. Analysis Settings")
-    max_time_ps = st.number_input("Max Time Analysis (ps)", value=700, step=100, help="Stop analysis after this time to save resources.")
-    stride = st.slider("Frame Stride", 1, 50, 1, help="Process every Nth frame.")
+    max_time_ps = st.number_input("Max Time Analysis (ps)", value=700, step=100)
+    stride = st.slider("Frame Stride", 1, 50, 1)
     grid_res = st.slider("Grid Resolution", 50, 200, 120)
     
-    with st.expander("Advanced Physics Thresholds"):
-        # UPDATED DEFAULTS BASED ON YOUR DATA
-        pore_thresh = st.number_input("Pore Threshold (kg/m³)", value=500)  # Was 450
-        prepore_low = st.number_input("Pre-Pore Low (kg/m³)", value=380)    # Was 200
-        prepore_high = st.number_input("Pre-Pore High (kg/m³)", value=480)   # Was 440
-        rupture_dens = st.number_input("Rupture Density (kg/m³)", value=990) # Keep 990
+    with st.expander("Advanced Physics Thresholds", expanded=True):
+        st.info("Classifications are now strictly based on these values.")
+        pore_thresh = st.number_input("Pore Threshold (kg/m³)", value=500, help="Any density above this is labeled 'Pore'")
+        prepore_low = st.number_input("Pre-Pore Low (kg/m³)", value=380, help="Any density between Low and Pore Threshold is 'Pre-Pore'")
+        rupture_dens = st.number_input("Rupture Density (kg/m³)", value=990)
         z_min = st.number_input("Z Min (Å)", value=40.0)
         z_max = st.number_input("Z Max (Å)", value=70.0)
         
     st.markdown("---")
     st.markdown("**Credits**")
-    st.caption("Developed by Rayhan Miah")
     st.caption("MDAnalysis & SciPy Integration")
     
     start_btn = st.button("Run Analysis", type="primary", use_container_width=True)
@@ -328,14 +329,13 @@ if start_btn and gro_file and xtc_file:
         params = {
             'grid_res': grid_res, 'z_min': z_min, 'z_max': z_max,
             'pore_thresh': pore_thresh, 'prepore_low': prepore_low,
-            'prepore_high': prepore_high, 'rupture_dens': rupture_dens,
+            'rupture_dens': rupture_dens,
             'stride': stride, 'max_time_ps': max_time_ps
         }
         
         with st.spinner("Processing Trajectory..."):
             df, frames = run_processing(u, params, t_dir)
             
-            # GENERATE GIF
             gif_path = os.path.join(t_dir, "dashboard.gif")
             images = [iio.imread(f) for f in frames]
             if images:
@@ -343,15 +343,13 @@ if start_btn and gro_file and xtc_file:
 
         st.success("Analysis Complete.")
         
-        # TABS SETUP
         tab1, tab2, tab3, tab4 = st.tabs(["Dashboard Animation", "Visual Analytics", "Dataset Explorer", "Downloads"])
         
         with tab1:
             if os.path.exists(gif_path):
-                # Binary read fix for consistent playback
                 st.image(open(gif_path, 'rb').read(), caption="Forensic Dashboard Replay", use_container_width=True)
             else:
-                st.warning("No images were generated (check time limits).")
+                st.warning("No images were generated.")
             
         with tab2:
             col1, col2 = st.columns(2)
@@ -364,7 +362,6 @@ if start_btn and gro_file and xtc_file:
                 st.bar_chart(state_counts)
                 
             st.subheader("Lipid Recruitment Kinetics")
-            # Select only columns that are lipids
             lipid_cols = [c for c in df.columns if c in LIPID_STYLES.keys()]
             st.line_chart(df, x="Time_ps", y=lipid_cols)
 
