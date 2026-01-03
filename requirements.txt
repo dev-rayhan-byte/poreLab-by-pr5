@@ -1,0 +1,7 @@
+streamlit
+MDAnalysis
+matplotlib
+numpy
+scipy
+imageio
+pandas
