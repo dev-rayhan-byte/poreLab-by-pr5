@@ -371,4 +371,20 @@ if start_btn and gro_file and xtc_file:
             st.subheader("Generated Dataset")
             st.dataframe(df, use_container_width=True)
 
-        with tab4
+        with tab4:
+            colA, colB = st.columns(2)
+            csv = df.to_csv(index=False).encode('utf-8')
+            colA.download_button("Download CSV Dataset", csv, "pore_data.csv", "text/csv")
+            
+            if os.path.exists(gif_path):
+                # For download button, we must read the file
+                with open(gif_path, "rb") as file:
+                    colB.download_button("Download GIF Animation", file, "dashboard.gif", "image/gif")
+
+    except Exception as e:
+        st.error(f"Analysis Error: {e}")
+
+elif start_btn:
+    st.warning("Please upload both structure (.gro) and trajectory (.xtc) files.")
+else:
+    st.info("Upload files to begin analysis.")
