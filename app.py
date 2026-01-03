@@ -298,16 +298,17 @@ with st.sidebar:
     grid_res = st.slider("Grid Resolution", 50, 200, 120)
     
     with st.expander("Advanced Physics Thresholds"):
-        pore_thresh = st.number_input("Pore Threshold (kg/m³)", value=450)
-        prepore_low = st.number_input("Pre-Pore Low (kg/m³)", value=200)
-        prepore_high = st.number_input("Pre-Pore High (kg/m³)", value=440)
-        rupture_dens = st.number_input("Rupture Density (kg/m³)", value=990)
+        # UPDATED DEFAULTS BASED ON YOUR DATA
+        pore_thresh = st.number_input("Pore Threshold (kg/m³)", value=500)  # Was 450
+        prepore_low = st.number_input("Pre-Pore Low (kg/m³)", value=380)    # Was 200
+        prepore_high = st.number_input("Pre-Pore High (kg/m³)", value=480)   # Was 440
+        rupture_dens = st.number_input("Rupture Density (kg/m³)", value=990) # Keep 990
         z_min = st.number_input("Z Min (Å)", value=40.0)
         z_max = st.number_input("Z Max (Å)", value=70.0)
         
     st.markdown("---")
     st.markdown("**Credits**")
-    st.caption("Developed by [Your Name/Lab Name]")
+    st.caption("Developed by Rayhan Miah")
     st.caption("MDAnalysis & SciPy Integration")
     
     start_btn = st.button("Run Analysis", type="primary", use_container_width=True)
