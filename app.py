@@ -7,6 +7,7 @@ import imageio.v3 as iio
 import os
 import pandas as pd
 import tempfile
+import time
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Rectangle
 from matplotlib.gridspec import GridSpec
@@ -116,7 +117,7 @@ def run_processing(u, params, temp_dir):
         
         current_box_nm = u.dimensions[:2] / 10
         
-        # Figure Setup
+        # Figure Setup - Optimized DPI for GIF Performance
         fig = plt.figure(figsize=(26, 12))
         gs = GridSpec(1, 4, width_ratios=[0.8, 4.2, 2.0, 2.0], wspace=0.15, hspace=0, figure=fig)
         ax_key, ax_map, ax_pore, ax_prepore = [fig.add_subplot(gs[i]) for i in range(4)]
@@ -145,24 +146,20 @@ def run_processing(u, params, temp_dir):
             density_smooth = ndimage.gaussian_filter(d_map, sigma=1.5)
             max_core_density = np.max(density_smooth)
             
-            # --- STRICT THRESHOLD LOGIC (NO SIZE DEPENDENCY) ---
-            # We determine RUPTURE status immediately
+            # STRICT THRESHOLD LOGIC (Decoupled from Size)
             if max_core_density >= rupture_dens: 
                 RUPTURE_FLAG = True
 
-            # --- VISUAL DETECTION ONLY (Does not affect CSV Label) ---
-            # We still find centers so we can draw circles on the map
+            # Visual Detection (Map Only)
             pore_bin = density_smooth >= pore_thresh
             lbl, n_f = ndimage.label(pore_bin)
             if n_f > 0:
                 sizes = ndimage.sum(pore_bin, lbl, range(1, n_f+1))
-                # Just keeping size calc for area reporting, not for classification
-                current_pore_area_pixels = np.sum(sizes) 
+                current_pore_area_pixels = np.sum(sizes)
                 coms = ndimage.center_of_mass(pore_bin, lbl, range(1, n_f+1))
                 coms = np.atleast_2d(coms)
                 active_pore_centers = [np.array([(c[0]*dx)/10, (c[1]*dy)/10]) for c in coms]
             
-            # Find Prepore centers for visuals
             if not RUPTURE_FLAG:
                 hotspot_bin = (density_smooth >= prepore_low) & (density_smooth < pore_thresh)
                 lbl_h, n_h = ndimage.label(hotspot_bin)
@@ -171,7 +168,6 @@ def run_processing(u, params, temp_dir):
                     coms_h = np.atleast_2d(coms_h)
                     for c in coms_h:
                         p_c = np.array([(c[0]*dx)/10, (c[1]*dy)/10])
-                        # Only add if far from existing pore centers
                         is_near_pore = any(np.linalg.norm(p_c - p) < FORENSIC_RADIUS_NM for p in active_pore_centers)
                         if not is_near_pore:
                             active_prepore_centers.append(p_c)
@@ -217,9 +213,7 @@ def run_processing(u, params, temp_dir):
                 ax_map.scatter(pos_nm[:,0], pos_nm[:,1], c=colors, marker=s['m'], s=sizes, 
                                linewidths=lws, edgecolors=edges, alpha=alphas)
 
-        # --- DATASET LOGIC: PURE THRESHOLD DEPENDENCY ---
-        # We ignore area size completely for classification.
-        
+        # --- DATASET LOGIC ---
         pixel_area_nm2 = (dx/10) * (dy/10)
         final_area = current_pore_area_pixels * pixel_area_nm2
         
@@ -227,7 +221,6 @@ def run_processing(u, params, temp_dir):
         row_state = "Stable"
         active_lipids = {}
         
-        # HIERARCHY BASED ONLY ON MAX_CORE_DENSITY
         if max_core_density >= rupture_dens:
             row_label, row_state, active_lipids = 3, "Ruptured", curr_pore_lipids
         elif max_core_density >= pore_thresh:
@@ -255,7 +248,7 @@ def run_processing(u, params, temp_dir):
                         h['type'] = t; known = True; break
                 if not known and len(pore_history_log) < 5: pore_history_log.append({'center': c, 'type': t})
 
-        # --- PLOTTING FINALIZATION ---
+        # --- PLOTTING ---
         ax_map.imshow(density_smooth.T, cmap='Blues', origin='lower', extent=[0, box_x_A/10, 0, box_y_A/10], 
                       vmin=0, vmax=1000, alpha=0.9)
         ax_map.text(0.02, 0.98, f"TIME: {ts.time:.0f} ps", transform=ax_map.transAxes, 
@@ -275,7 +268,8 @@ def run_processing(u, params, temp_dir):
         draw_stylish_table(ax_prepore, "History", global_prepore_history, 0.45, theme_color='#1B5E20', is_history=True)
         
         fname = os.path.join(temp_dir, f"frame_{i:05d}.png")
-        plt.savefig(fname, dpi=80, facecolor='#F0F2F5', bbox_inches='tight')
+        # IMPORTANT: Reduced DPI to 60 to make GIF play smoothly
+        plt.savefig(fname, dpi=60, facecolor='#F0F2F5', bbox_inches='tight')
         plt.close(fig)
         frame_files.append(fname)
     
@@ -289,7 +283,6 @@ st.title("Forensic MD Dashboard")
 st.markdown("Automated Pore Detection & Lipid Dynamics Analysis")
 st.markdown("---")
 
-# SIDEBAR CONTROLS
 with st.sidebar:
     st.header("1. Data Input")
     gro_file = st.file_uploader("Structure File (.gro)", type=['gro'])
@@ -302,19 +295,17 @@ with st.sidebar:
     
     with st.expander("Advanced Physics Thresholds", expanded=True):
         st.info("Classifications are now strictly based on these values.")
-        pore_thresh = st.number_input("Pore Threshold (kg/m³)", value=500, help="Any density above this is labeled 'Pore'")
-        prepore_low = st.number_input("Pre-Pore Low (kg/m³)", value=380, help="Any density between Low and Pore Threshold is 'Pre-Pore'")
+        pore_thresh = st.number_input("Pore Threshold (kg/m³)", value=500)
+        prepore_low = st.number_input("Pre-Pore Low (kg/m³)", value=380)
         rupture_dens = st.number_input("Rupture Density (kg/m³)", value=990)
         z_min = st.number_input("Z Min (Å)", value=40.0)
         z_max = st.number_input("Z Max (Å)", value=70.0)
         
     st.markdown("---")
-    st.markdown("**Credits**")
-    st.caption("MDAnalysis & SciPy Integration")
+    st.caption("Developed by MD Forensics Lab")
     
     start_btn = st.button("Run Analysis", type="primary", use_container_width=True)
 
-# MAIN EXECUTION
 if start_btn and gro_file and xtc_file:
     
     t_dir = tempfile.mkdtemp()
@@ -336,9 +327,15 @@ if start_btn and gro_file and xtc_file:
         with st.spinner("Processing Trajectory..."):
             df, frames = run_processing(u, params, t_dir)
             
-            gif_path = os.path.join(t_dir, "dashboard.gif")
+            # GIF GENERATION
+            # Use a unique name to prevent browser caching issues
+            timestamp = int(time.time())
+            gif_filename = f"dashboard_{timestamp}.gif"
+            gif_path = os.path.join(t_dir, gif_filename)
+            
             images = [iio.imread(f) for f in frames]
             if images:
+                # 150ms per frame = ~6.6 FPS. loop=0 means infinite.
                 iio.imwrite(gif_path, images, duration=150, loop=0)
 
         st.success("Analysis Complete.")
@@ -347,7 +344,9 @@ if start_btn and gro_file and xtc_file:
         
         with tab1:
             if os.path.exists(gif_path):
-                st.image(open(gif_path, 'rb').read(), caption="Forensic Dashboard Replay", use_container_width=True)
+                # FIX: Pass the filename directly to st.image.
+                # This is much more stable than passing binary data for large GIFs.
+                st.image(gif_path, caption="Forensic Dashboard Replay", use_container_width=True)
             else:
                 st.warning("No images were generated.")
             
@@ -372,19 +371,4 @@ if start_btn and gro_file and xtc_file:
             st.subheader("Generated Dataset")
             st.dataframe(df, use_container_width=True)
 
-        with tab4:
-            colA, colB = st.columns(2)
-            csv = df.to_csv(index=False).encode('utf-8')
-            colA.download_button("Download CSV Dataset", csv, "pore_data.csv", "text/csv")
-            
-            if os.path.exists(gif_path):
-                with open(gif_path, "rb") as file:
-                    colB.download_button("Download GIF Animation", file, "dashboard.gif", "image/gif")
-
-    except Exception as e:
-        st.error(f"Analysis Error: {e}")
-
-elif start_btn:
-    st.warning("Please upload both structure (.gro) and trajectory (.xtc) files.")
-else:
-    st.info("Upload files to begin analysis.")
+        with tab4
