@@ -7,7 +7,6 @@ import imageio.v3 as iio
 import os
 import pandas as pd
 import tempfile
-import shutil
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Rectangle
 from matplotlib.gridspec import GridSpec
@@ -15,13 +14,14 @@ from matplotlib.gridspec import GridSpec
 # ---------------- STREAMLIT PAGE CONFIG ----------------
 st.set_page_config(
     page_title="MD Pore Forensics Lab",
-    page_icon="🧬",
+    page_icon="🔬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # ---------------- VISUAL STYLE CONSTANTS ----------------
 plt.style.use('seaborn-v0_8-white')
+# Professional color palette
 LIPID_STYLES = {
     'POPEE': {'c': '#e7298a', 'm': 'o'}, 'POPC': {'c': '#4daf4a', 'm': 's'},
     'POGL': {'c': '#e6ab02', 'm': '^'}, 'POPE': {'c': '#377eb8', 'm': 'v'},
@@ -83,6 +83,7 @@ def run_processing(u, params, temp_dir):
     prepore_high = params['prepore_high']
     rupture_dens = params['rupture_dens']
     stride = params['stride']
+    max_time_ps = params['max_time_ps']
     
     # Init Data
     global_pore_history = {}
@@ -107,12 +108,19 @@ def run_processing(u, params, temp_dir):
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    total_frames = len(u.trajectory[::stride])
+    # Calculate approximate frames to process for progress bar
+    total_frames_in_traj = len(u.trajectory)
     
     for i, ts in enumerate(u.trajectory[::stride]):
+        
+        # TIME LIMIT CHECK
+        if ts.time > max_time_ps:
+            break
+            
         # Update UI
-        progress_bar.progress((i + 1) / total_frames)
-        status_text.text(f"Processing Frame {ts.frame} ({ts.time:.0f} ps)...")
+        progress_val = min((ts.frame / total_frames_in_traj), 1.0)
+        progress_bar.progress(progress_val)
+        status_text.text(f"Processing Frame {ts.frame} | Time: {ts.time:.0f} ps")
         
         current_box_nm = u.dimensions[:2] / 10
         
@@ -266,39 +274,47 @@ def run_processing(u, params, temp_dir):
         plt.savefig(fname, dpi=80, facecolor='#F0F2F5', bbox_inches='tight')
         plt.close(fig)
         frame_files.append(fname)
-        
+    
+    progress_bar.progress(1.0)
+    status_text.text("Processing Complete.")
     return pd.DataFrame(dataset_records), frame_files
 
 # ---------------- MAIN APP LAYOUT ----------------
 
-# TITLE
-st.title("🧬 Forensic MD Dashboard: Pore & Lipid Analytics")
+# HEADER
+st.title("Forensic MD Dashboard")
+st.markdown("Automated Pore Detection & Lipid Dynamics Analysis")
 st.markdown("---")
 
 # SIDEBAR CONTROLS
 with st.sidebar:
-    st.header("1. Upload Data")
+    st.header("1. Data Input")
     gro_file = st.file_uploader("Structure File (.gro)", type=['gro'])
     xtc_file = st.file_uploader("Trajectory File (.xtc)", type=['xtc'])
     
-    st.header("2. Physics Parameters")
-    stride = st.slider("Frame Stride (Skip Frames)", 1, 100, 1, help="Higher = Faster Preview")
+    st.header("2. Analysis Settings")
+    max_time_ps = st.number_input("Max Time Analysis (ps)", value=700, step=100, help="Stop analysis after this time to save resources.")
+    stride = st.slider("Frame Stride", 1, 50, 1, help="Process every Nth frame.")
     grid_res = st.slider("Grid Resolution", 50, 200, 120)
     
-    with st.expander("Advanced Thresholds"):
+    with st.expander("Advanced Physics Thresholds"):
         pore_thresh = st.number_input("Pore Threshold (kg/m³)", value=450)
         prepore_low = st.number_input("Pre-Pore Low (kg/m³)", value=200)
         prepore_high = st.number_input("Pre-Pore High (kg/m³)", value=440)
         rupture_dens = st.number_input("Rupture Density (kg/m³)", value=990)
         z_min = st.number_input("Z Min (Å)", value=40.0)
         z_max = st.number_input("Z Max (Å)", value=70.0)
-
-    start_btn = st.button("🚀 Run Analysis", type="primary", use_container_width=True)
+        
+    st.markdown("---")
+    st.markdown("**Credits**")
+    st.caption("Developed by [Your Name/Lab Name]")
+    st.caption("MDAnalysis & SciPy Integration")
+    
+    start_btn = st.button("Run Analysis", type="primary", use_container_width=True)
 
 # MAIN EXECUTION
 if start_btn and gro_file and xtc_file:
     
-    # SETUP TEMP FILES
     t_dir = tempfile.mkdtemp()
     gro_path = os.path.join(t_dir, "input.gro")
     xtc_path = os.path.join(t_dir, "input.xtc")
@@ -312,69 +328,65 @@ if start_btn and gro_file and xtc_file:
             'grid_res': grid_res, 'z_min': z_min, 'z_max': z_max,
             'pore_thresh': pore_thresh, 'prepore_low': prepore_low,
             'prepore_high': prepore_high, 'rupture_dens': rupture_dens,
-            'stride': stride
+            'stride': stride, 'max_time_ps': max_time_ps
         }
         
-        # RUN ANALYSIS
-        with st.spinner("Processing Trajectory... Please Wait."):
+        with st.spinner("Processing Trajectory..."):
             df, frames = run_processing(u, params, t_dir)
             
             # GENERATE GIF
             gif_path = os.path.join(t_dir, "dashboard.gif")
             images = [iio.imread(f) for f in frames]
-            iio.imwrite(gif_path, images, duration=150, loop=0)
+            if images:
+                iio.imwrite(gif_path, images, duration=150, loop=0)
 
-        # RESULTS TABS
-        st.success("Analysis Complete!")
-        tab1, tab2, tab3 = st.tabs(["📊 Dashboard View", "📈 Data Analytics", "📥 Downloads"])
+        st.success("Analysis Complete.")
+        
+        # TABS SETUP
+        tab1, tab2, tab3, tab4 = st.tabs(["Dashboard Animation", "Visual Analytics", "Dataset Explorer", "Downloads"])
         
         with tab1:
-            st.image(gif_path, caption="Generated Dashboard Animation", use_container_width=True)
+            if os.path.exists(gif_path):
+                # Binary read fix for consistent playback
+                st.image(open(gif_path, 'rb').read(), caption="Forensic Dashboard Replay", use_container_width=True)
+            else:
+                st.warning("No images were generated (check time limits).")
             
         with tab2:
             col1, col2 = st.columns(2)
             with col1:
-                st.subheader("Pore Area Evolution")
+                st.subheader("Pore Growth Kinetics")
                 st.line_chart(df, x="Time_ps", y="Pore_Area_nm2")
             with col2:
                 st.subheader("State Classification")
                 state_counts = df['State'].value_counts()
                 st.bar_chart(state_counts)
                 
-            st.subheader("Local Density vs Time")
+            st.subheader("Lipid Recruitment Kinetics")
+            # Select only columns that are lipids
+            lipid_cols = [c for c in df.columns if c in LIPID_STYLES.keys()]
+            st.line_chart(df, x="Time_ps", y=lipid_cols)
+
+            st.subheader("Local Density Profile")
             st.area_chart(df, x="Time_ps", y="Local_Density", color="#FF5555")
 
         with tab3:
+            st.subheader("Generated Dataset")
+            st.dataframe(df, use_container_width=True)
+
+        with tab4:
             colA, colB = st.columns(2)
-            
-            # CSV Download
             csv = df.to_csv(index=False).encode('utf-8')
-            colA.download_button(
-                "📄 Download Dataset (CSV)",
-                csv,
-                "pore_analysis.csv",
-                "text/csv",
-                key='download-csv'
-            )
+            colA.download_button("Download CSV Dataset", csv, "pore_data.csv", "text/csv")
             
-            # GIF Download
-            with open(gif_path, "rb") as file:
-                btn = colB.download_button(
-                    label="🎬 Download Animation (GIF)",
-                    data=file,
-                    file_name="dashboard_render.gif",
-                    mime="image/gif"
-                )
+            if os.path.exists(gif_path):
+                with open(gif_path, "rb") as file:
+                    colB.download_button("Download GIF Animation", file, "dashboard.gif", "image/gif")
 
     except Exception as e:
-        st.error(f"An error occurred: {e}")
-    
-    finally:
-        # Cleanup temp directory logic could go here, 
-        # but Streamlit cleans up session temp files eventually.
-        pass
+        st.error(f"Analysis Error: {e}")
 
 elif start_btn:
-    st.warning("⚠️ Please upload both GRO and XTC files.")
+    st.warning("Please upload both structure (.gro) and trajectory (.xtc) files.")
 else:
-    st.info("👈 Upload your files in the sidebar to begin.")
+    st.info("Upload files to begin analysis.")
